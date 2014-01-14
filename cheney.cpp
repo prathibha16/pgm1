@@ -111,6 +111,8 @@ void Heap::collect() {
     Object* parent_obj = (Object*) scanned;
     foreach (Object** slot in parent_obj->obejct_fields()) {
       process_reference(slot);
+      // note: _to_space->top() moves if any object is newly copied
+      //       into to-space.
     }
     scanned += parent_obj->size();
   }
