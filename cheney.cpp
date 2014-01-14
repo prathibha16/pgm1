@@ -21,8 +21,11 @@ class Heap {
   Object* evacuate(Object* obj);
 
 public:
+  Heap(address bottom, address end);
+
   address allocate(size_t size);
   void collect();
+  void process_reference(Object** slot);
 };
 
 class Semispace {
@@ -31,12 +34,15 @@ class Semispace {
   address _end;
 
 public:
+  Semispace(address bottom, address end);
+
   address bottom() { return _bottom; }
   address top()    { return _top; }
   address end()    { return _end; }
 
   bool contains(address obj);
   address allocate(size_t size);
+  void reset();
 };
 
 void Object::forward_to(address new_addr) {
@@ -51,11 +57,25 @@ bool Object::is_forwarded() {
   return _forwardee != nullptr;
 }
 
+// Initialize the heap. Assuming contiguous address space
+Heap::Heap(address bottom, address end) {
+  size_t space_size = (end - bottom) / 2;
+  address boundary = bottom + space_size;
+  _from_space = new Semispace(bottom, boundary);
+  _to_space   = new Semispace(boundary, end);
+}
+
 void Heap::swap_spaces() {
+  // Swap the two semispaces.
+  
   // std:swap(_from_space, _to_space);
   Semispace* temp = _from_space;
   _from_space = _to_space;
   _to_space = temp;
+
+  // After swapping, the to-space is assumed to be empty.
+  // Reset its allocation pointer.
+  _to_space->reset();
 }
 
 address Heap::allocate(size_t size) {
@@ -77,33 +97,45 @@ Object* Heap::evacuate(Object* obj) {
 }
 
 void Heap::collect() {
+  // The from-space contains objects, and the to-space is empty now.
+
   address scanned = _to_space->bottom();
   
   // scavenge objects directly referenced by the root set
-  foreach (Object** field in ROOTS) {
-    Object* obj = *field;
-    if (obj != nullptr && _from_space->contains(obj)) {
-      Object* new_obj = obj->is_forwarded() ? obj->forwardee()
-                                            : evacuate(obj);
-      *field = new_obj;
-    }
+  foreach (Object** slot in ROOTS) {
+    process_reference(slot);
   }
 
   // breadth-first scanning of object graph
-  do {
+  while (scanned < _to_space->top()) {
     Object* parent_obj = (Object*) scanned;
-    foreach (Object** field in parent_obj->obejct_fields()) {
-      Object* obj = *field;
-      if (obj != nullptr && _from_space->contains(obj)) {
-        Object* new_obj = obj->is_forwarded() ? obj->forwardee()
-                                              : evacuate(obj);
-        *field = new_obj;
-      }
+    foreach (Object** slot in parent_obj->obejct_fields()) {
+      process_reference(slot);
     }
     scanned += parent_obj->size();
-  } while (scanned < _to_space->top());
+  }
+
+  // Now all live objects will have been evacuated into the to-space,
+  // and we don't need the data in the from-space anymore.
 
   swap_spaces();
+}
+
+void Heap::process_reference(Object** slot) {
+  Object* obj = *slot;
+  if (obj != nullptr && _from_space->contains(obj)) {
+    Object* new_obj = obj->is_forwarded() ? obj->forwardee() // copied
+                                          : evacuate(obj);   // not copied (not marked)
+
+    // fixup the slot to point to the new object
+    *slot = new_obj;
+  }
+}
+
+Semispace::Semispace(address bottom, address end) {
+  _bottom = bottom;
+  _top    = bottom;
+  _end    = end;
 }
 
 address Semispace::contains(address obj) {
@@ -117,4 +149,8 @@ address Semispace::allocate(size_t size) {
   } else {
     return nullptr;
   }
+}
+
+void Semispace::reset() {
+  _top = _bottom;
 }
